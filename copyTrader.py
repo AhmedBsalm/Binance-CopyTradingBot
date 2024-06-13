@@ -1,10 +1,10 @@
 import os
-import requests
 import json
-import time
 import logging
 from pybit.unified_trading import HTTP
 from dotenv import load_dotenv
+import asyncio
+from httpx import AsyncClient,ConnectTimeout,NetworkError
 
 load_dotenv()
 
@@ -22,7 +22,7 @@ logging.getLogger('').addHandler(file_handler)
 
 
 
-def trade(symbol, direction):
+async def trade(symbol, direction):
     with open(trade_info_file) as f:
         trade_info = json.load(f)
 
@@ -116,7 +116,7 @@ def trade(symbol, direction):
 
 
 
-def close_trade_on_symbol(symbol):
+async def close_trade_on_symbol(symbol):
     with open(trade_info_file) as f:
         trade_info = json.load(f)
 
@@ -183,73 +183,77 @@ if os.path.exists(filename):
             pass
 
 
-counter = 0 # initialize counter
+counter = 0 
 no_change_threshold = 30
-
-while True:
-    try:
-        response = requests.get("https://binance-futures-leaderboard1.p.rapidapi.com/v2/getTraderPositions?tradeType=ALL", headers=headers, params=params)
-        response.raise_for_status()
-        data = response.json()
-        print(data)
-
-
-
-        current_symbols = {}
-        if data['data'][0]['positions']:
-            for item in data['data'][0]['positions']['perpetual']:
-                
-                amount = item['amount']
-                symbol = item['symbol']
-                current_symbols[symbol] = amount
-
-            new_symbols = set(current_symbols.keys()) - set(previous_symbols.keys())
-            removed_symbols = set(previous_symbols.keys()) - set(current_symbols.keys())
-
-            symbols_added = []
-            symbols_removed = []
-            symbols_with_increased_amount = []
-
-            if new_symbols:
-                symbols_added = list(new_symbols)
-                logging.info(f"New symbols found: {symbols_added}")
-                for symbol in symbols_added:
-                    if current_symbols[symbol] > 0:
-                        trade(symbol, "Buy")
-                    elif current_symbols[symbol] < 0:
-                        trade(symbol, "Sell")
-            if removed_symbols:
-                symbols_removed = list(removed_symbols)
-                logging.info(f"Removed symbols: {symbols_removed}")
-                for symbol in removed_symbols:
-                    close_trade_on_symbol(symbol)
-                
-
-            for symbol in current_symbols:
-                if symbol in previous_symbols and abs(current_symbols[symbol]) > abs(previous_symbols[symbol]):
-                    increase_percentage = abs(current_symbols[symbol] - previous_symbols[symbol]) / abs(previous_symbols[symbol])
-                    if increase_percentage >= 1.5:
-                        symbols_with_increased_amount.append(symbol)
-                        logging.info(f"Symbol {symbol} amount increased: {previous_symbols[symbol]} -> {current_symbols[symbol]}")
-                        if current_symbols[symbol] > previous_symbols[symbol]:
-                            direction = "Buy"
-                        else:
-                            direction = "Sell"
-                        trade(symbol, direction)
+async def main():
+    while True:
+        try:
+            async with AsyncClient() as http_client:
+                response = await http_client.get("https://binance-futures-leaderboard1.p.rapidapi.com/v2/getTraderPositions?tradeType=ALL", headers=headers, params=params)
+                response.raise_for_status()
+                data = response.json()
+                print(data)
 
 
-            if not symbols_added and not symbols_removed and not symbols_with_increased_amount:
-                counter += 1 # increment counter
-                if counter == no_change_threshold:
-                    logging.info("No changes")
-                    counter = 0 # reset counter
 
-            previous_symbols = current_symbols
+                current_symbols = {}
+                if data['data'][0]['positions']:
+                    for item in data['data'][0]['positions']['perpetual']:
+                        
+                        amount = item['amount']
+                        symbol = item['symbol']
+                        current_symbols[symbol] = amount
 
-            with open(filename, 'w') as f:
-                json.dump(previous_symbols, f)
+                    new_symbols = set(current_symbols.keys()) - set(previous_symbols.keys())
+                    removed_symbols = set(previous_symbols.keys()) - set(current_symbols.keys())
 
-    except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
-        logging.error(f"An error occurred while making the request: {e}")
+                    symbols_added = []
+                    symbols_removed = []
+                    symbols_with_increased_amount = []
 
-    time.sleep(1) 
+                    if new_symbols:
+                        symbols_added = list(new_symbols)
+                        logging.info(f"New symbols found: {symbols_added}")
+                        for symbol in symbols_added:
+                            if current_symbols[symbol] > 0:
+                                await trade(symbol, "Buy")
+                            elif current_symbols[symbol] < 0:
+                                await trade(symbol, "Sell")
+                    if removed_symbols:
+                        symbols_removed = list(removed_symbols)
+                        logging.info(f"Removed symbols: {symbols_removed}")
+                        for symbol in removed_symbols:
+                            await close_trade_on_symbol(symbol)
+                        
+
+                    for symbol in current_symbols:
+                        if symbol in previous_symbols and abs(current_symbols[symbol]) > abs(previous_symbols[symbol]):
+                            increase_percentage = abs(current_symbols[symbol] - previous_symbols[symbol]) / abs(previous_symbols[symbol])
+                            if increase_percentage >= 1.5:
+                                symbols_with_increased_amount.append(symbol)
+                                logging.info(f"Symbol {symbol} amount increased: {previous_symbols[symbol]} -> {current_symbols[symbol]}")
+                                if current_symbols[symbol] > previous_symbols[symbol]:
+                                    direction = "Buy"
+                                else:
+                                    direction = "Sell"
+                                await trade(symbol, direction)
+
+
+                    if not symbols_added and not symbols_removed and not symbols_with_increased_amount:
+                        counter += 1 # increment counter
+                        if counter == no_change_threshold:
+                            logging.info("No changes")
+                            counter = 0 # reset counter
+
+                    previous_symbols = current_symbols
+
+                    with open(filename, 'w') as f:
+                        json.dump(previous_symbols, f)
+
+        except (ConnectTimeout, NetworkError) as e:
+                        print(f"Network error: {e}. Retrying in {5} seconds...")
+                        await asyncio.sleep(5) 
+
+        await asyncio.sleep(1) 
+        
+asyncio.run(main())
