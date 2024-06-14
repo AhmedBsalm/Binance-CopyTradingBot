@@ -2,3 +2,4 @@
 *.log
 symbols.json
 *.zip
+__pycache__/
